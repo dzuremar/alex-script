@@ -3,6 +3,7 @@
 /blacklist
 /input/
 /output/
+/tmp/
 
 # compiled output
 /dist

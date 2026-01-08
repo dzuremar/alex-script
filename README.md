@@ -1,24 +1,26 @@
 # Email List Verify (ELV) Email Finder Tool
 
-CLI tool that generates email address variants from contact data (first name, last name, domain) and uploads them to the EmailListVerify API for validation.
+CLI tool that generates email address variants from contact data (first name, last name, domain), validates them via EmailListVerify API, and produces a final CSV with verified emails.
 
 ## How It Works
 
 1. Scans the `input/` folder for new CSV files
 2. For each new file, generates email variants using configurable templates
 3. Validates generated emails using `email-validator`
-4. Writes variants to `output/<filename>.elv.csv`
-5. Uploads the file to EmailListVerify API for bulk verification
-6. Stores file IDs in `output/state.json` to track processed files
-7. Checks and displays progress of all previously uploaded files
+4. Uploads variants to EmailListVerify API for bulk verification
+5. Tracks file IDs in `output/state.json` while processing
+6. When ELV processing is complete, downloads results
+7. Merges verified emails (status "ok") back into the original CSV
+8. Outputs final CSV to `output/` with a new "Verified Emails" column
 
 ## Directory Structure
 
 ```
 ├── input/           # Place CSV files here for processing
 ├── output/
-│   ├── state.json   # Tracks processed files and their ELV IDs
-│   └── *.elv.csv    # Generated email variant files
+│   ├── state.json   # Tracks files currently being processed by ELV
+│   └── *.csv        # Final output files with verified emails
+├── tmp/             # Temporary files (auto-cleaned after upload)
 └── .env             # Configuration
 ```
 
@@ -60,11 +62,11 @@ npm run start
 ```
 
 The script will:
-1. Check progress of any previously uploaded files
-2. Process any new CSV files in `input/`
-3. Upload them to ELV and save the file IDs
+1. Check progress of any files being processed by ELV
+2. Download and merge results for finished files
+3. Process any new CSV files in `input/`
 
-Run it multiple times to check progress updates.
+Run it periodically until all files are processed.
 
 ## Input CSV Format
 
@@ -78,25 +80,34 @@ jane,,company.org
 
 ## Output
 
-- `output/state.json` - Tracks all processed files:
-  ```json
-  {
-    "files": {
-      "contacts.csv": {
-        "elvId": 12345,
-        "originalFile": "contacts.csv",
-        "elvInputFile": "contacts.csv.elv.csv",
-        "uploadedAt": "2024-01-08T10:00:00.000Z",
-        "progress": {
-          "percent": 50,
-          "status": "processing",
-          "checkedAt": "2024-01-08T10:05:00.000Z"
-        }
-      }
+Final output files are saved to `output/<filename>.csv` with a new "Verified Emails" column:
+
+```csv
+First Name,Last Name,Domain,Verified Emails
+john,smith,example.com,"john.smith@example.com
+info@example.com"
+jane,,company.org,info@company.org
+```
+
+Multiple verified emails are newline-delimited within the cell.
+
+### State File
+
+`output/state.json` tracks files currently being processed:
+
+```json
+{
+  "files": {
+    "contacts.csv": {
+      "elvId": 12345,
+      "originalFile": "contacts.csv",
+      "uploadedAt": "2024-01-08T10:00:00.000Z"
     }
   }
-  ```
-- `output/<filename>.elv.csv` - Generated emails with format: `line_number,email`
+}
+```
+
+Files are removed from state after successful processing.
 
 ## Scripts
 
@@ -108,4 +119,4 @@ jane,,company.org
 
 - `index.ts` - Main entry point with all logic
 - `.env` - Configuration (API key, column names, email templates)
-- `output/state.json` - Persistent state tracking processed files
+- `output/state.json` - Tracks files pending ELV processing

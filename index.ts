@@ -10,9 +10,11 @@ import { validate } from 'email-validator';
 const ELV_API_KEY = process.env.ELV_API_KEY;
 const ELV_UPLOAD_URL = `https://api.emaillistverify.com/api/verifyApiFile?secret=${ELV_API_KEY}`;
 const ELV_PROGRESS_URL = (id: number) => `https://api.emaillistverify.com/api/maillists/${id}/progress?secret=${ELV_API_KEY}`;
+const ELV_DOWNLOAD_URL = (id: number) => `https://api.emaillistverify.com/api/maillists/${id}?secret=${ELV_API_KEY}`;
 
 const INPUT_DIR = path.join(import.meta.dirname, 'input');
 const OUTPUT_DIR = path.join(import.meta.dirname, 'output');
+const TMP_DIR = path.join(import.meta.dirname, 'tmp');
 const STATE_FILE = path.join(OUTPUT_DIR, 'state.json');
 
 const VARIANTS = process.env.VARIANTS?.split('\n').filter(Boolean) || [];
@@ -33,6 +35,15 @@ interface State {
   files: Record<string, FileState>;
 }
 
+interface ProgressResponse {
+  status: string;
+  progress: number;
+  credits: { charged: number; returned: number };
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 if (!ELV_API_KEY) {
   console.error('Missing ELV_API_KEY in .env file');
   process.exit(1);
@@ -41,6 +52,14 @@ if (!ELV_API_KEY) {
 if (!VARIANTS || !VARIANTS.length) {
   console.error('Invalid VARIANTS in .env file');
   process.exit(1);
+}
+
+function ensureDirectories(): void {
+  for (const dir of [INPUT_DIR, OUTPUT_DIR, TMP_DIR]) {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  }
 }
 
 function loadState(): State {
@@ -54,7 +73,14 @@ function saveState(state: State): void {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-function generateVariants(firstName: string, lastName: string, domain: string) {
+function cleanupTmpFile(filename: string): void {
+  const filepath = path.join(TMP_DIR, filename);
+  if (fs.existsSync(filepath)) {
+    fs.unlinkSync(filepath);
+  }
+}
+
+function generateVariants(firstName: string, lastName: string, domain: string): string[] {
   return VARIANTS.map((variant) => {
     if (firstName) {
       variant = variant.replace(/{first}/g, firstName).replace(/{f}/g, firstName.charAt(0));
@@ -74,7 +100,7 @@ function generateVariants(firstName: string, lastName: string, domain: string) {
       return;
     }
     return variant;
-  }).filter((email) => !!email && validate(email));
+  }).filter((email): email is string => !!email && validate(email));
 }
 
 async function uploadFileToElv(file: string): Promise<number> {
@@ -118,23 +144,88 @@ async function createElvInputFile(originalFile: string, elvInputFile: string): P
   });
 }
 
-interface ProgressResponse {
-  status: string;
-  progress: number;
-  credits: { charged: number; returned: number };
-  name: string;
-  createdAt: string;
-  updatedAt: string;
+async function downloadResults(elvId: number): Promise<Map<number, string[]>> {
+  const response = await axios.get(ELV_DOWNLOAD_URL(elvId));
+  const lines = (response.data as string).split('\n');
+
+  // Group valid emails by line number
+  const emailsByLine = new Map<number, string[]>();
+
+  for (const line of lines) {
+    if (!line.trim() || line.startsWith('ELV Result')) continue;
+
+    const parts = line.split(',');
+    if (parts.length < 3) continue;
+
+    const [result, lineNumStr, email] = parts;
+    if (result !== 'ok') continue;
+
+    const lineNum = parseInt(lineNumStr);
+    if (isNaN(lineNum)) continue;
+
+    if (!emailsByLine.has(lineNum)) {
+      emailsByLine.set(lineNum, []);
+    }
+    emailsByLine.get(lineNum)!.push(email.trim());
+  }
+
+  return emailsByLine;
 }
 
-async function checkProgress(state: State): Promise<void> {
+async function mergeResultsWithOriginal(
+  originalFile: string,
+  emailsByLine: Map<number, string[]>,
+  outputFile: string
+): Promise<void> {
+  const rows: Record<string, string>[] = [];
+  let headers: string[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    fs.createReadStream(originalFile)
+      .pipe(csv.parse({ headers: true }))
+      .on('headers', (h: string[]) => {
+        headers = h;
+      })
+      .on('data', (row: Record<string, string>) => {
+        rows.push(row);
+      })
+      .on('end', () => resolve())
+      .on('error', (error) => reject(error));
+  });
+
+  // Add new column header
+  const outputHeaders = [...headers, 'Verified Emails'];
+
+  const writeStream = fs.createWriteStream(outputFile);
+  const csvStream = csv.format({ headers: true });
+  csvStream.pipe(writeStream);
+
+  for (let i = 0; i < rows.length; i++) {
+    const lineNum = i + 1;
+    const emails = emailsByLine.get(lineNum) || [];
+    const outputRow: Record<string, string> = {};
+
+    for (const header of headers) {
+      outputRow[header] = rows[i][header];
+    }
+    outputRow['Verified Emails'] = emails.join('\n');
+
+    csvStream.write(outputRow);
+  }
+
+  await new Promise<void>((resolve) => {
+    csvStream.end(() => resolve());
+  });
+}
+
+async function processFinishedFiles(state: State): Promise<void> {
   const fileEntries = Object.entries(state.files);
   if (fileEntries.length === 0) {
-    console.log('No files being tracked.\n');
     return;
   }
 
   console.log('Checking progress of tracked files:\n');
+
   for (const [filename, fileState] of fileEntries) {
     try {
       const response = await axios.get<ProgressResponse>(ELV_PROGRESS_URL(fileState.elvId));
@@ -150,18 +241,35 @@ async function checkProgress(state: State): Promise<void> {
       console.log(`    ELV ID: ${fileState.elvId}`);
       console.log(`    Status: ${info.status}`);
       console.log(`    Progress: ${info.progress}%`);
-      console.log(`    Credits: ${info.credits.charged} charged, ${info.credits.returned} returned`);
+
+      if (info.status === 'finished') {
+        console.log(`    Downloading and processing results...`);
+
+        const originalFile = path.join(INPUT_DIR, filename);
+        const outputFile = path.join(OUTPUT_DIR, filename);
+
+        const emailsByLine = await downloadResults(fileState.elvId);
+        await mergeResultsWithOriginal(originalFile, emailsByLine, outputFile);
+
+        // Remove from state after successful processing
+        delete state.files[filename];
+        saveState(state);
+
+        console.log(`    Output saved to: output/${filename}`);
+      }
+
       console.log();
     } catch (error) {
-      console.log(`  ${filename}: Error checking progress - ${error instanceof Error ? error.message : error}\n`);
+      console.log(`  ${filename}: Error - ${error instanceof Error ? error.message : error}\n`);
     }
   }
+
   saveState(state);
 }
 
 async function processNewFiles(state: State): Promise<void> {
   const inputFiles = fs.readdirSync(INPUT_DIR).filter((f) => f.endsWith('.csv'));
-  const newFiles = inputFiles.filter((f) => !state.files[f]);
+  const newFiles = inputFiles.filter((f) => !state.files[f] && !fs.existsSync(path.join(OUTPUT_DIR, f)));
 
   if (newFiles.length === 0) {
     console.log('No new files to process.\n');
@@ -174,7 +282,7 @@ async function processNewFiles(state: State): Promise<void> {
     const originalFile = path.join(INPUT_DIR, filename);
     const timestamp = Date.now();
     const elvInputFilename = `${filename}.${timestamp}.elv.csv`;
-    const elvInputFile = path.join(OUTPUT_DIR, elvInputFilename);
+    const elvInputFile = path.join(TMP_DIR, elvInputFilename);
 
     console.log(`Processing: ${filename}`);
     try {
@@ -182,7 +290,11 @@ async function processNewFiles(state: State): Promise<void> {
       await createElvInputFile(originalFile, elvInputFile);
 
       const elvId = await uploadFileToElv(elvInputFile);
-      console.log(`  Done! ELV ID: ${elvId}\n`);
+      console.log(`  Done! ELV ID: ${elvId}`);
+
+      // Clean up tmp file after successful upload
+      cleanupTmpFile(elvInputFilename);
+      console.log(`  Cleaned up temporary file.`);
 
       state.files[filename] = {
         elvId,
@@ -191,8 +303,11 @@ async function processNewFiles(state: State): Promise<void> {
         uploadedAt: new Date().toISOString(),
       };
       saveState(state);
+      console.log();
     } catch (error) {
       console.error(`  Error processing ${filename}:`, error instanceof Error ? error.message : error);
+      // Clean up tmp file on error too
+      cleanupTmpFile(elvInputFilename);
       console.log();
     }
   }
@@ -201,18 +316,12 @@ async function processNewFiles(state: State): Promise<void> {
 async function run(): Promise<void> {
   console.log('=== Email List Verify Tool ===\n');
 
-  // Ensure directories exist
-  if (!fs.existsSync(INPUT_DIR)) {
-    fs.mkdirSync(INPUT_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(OUTPUT_DIR)) {
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  }
+  ensureDirectories();
 
   const state = loadState();
 
-  // Check progress of existing files
-  await checkProgress(state);
+  // Check progress and process finished files
+  await processFinishedFiles(state);
 
   // Process new files
   await processNewFiles(state);
