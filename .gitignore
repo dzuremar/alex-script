@@ -1,6 +1,8 @@
 .env
 /files
 /blacklist
+/input/
+/output/
 
 # compiled output
 /dist
