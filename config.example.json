@@ -1,0 +1,11 @@
+{
+  "elvApiKey": "YOUR_API_KEY_HERE",
+  "variants": [
+    "{first}.{last}@{domain}",
+    "{last}.{first}@{domain}",
+    "{f}.{last}@{domain}",
+    "info@{domain}",
+    "marketing@{domain}",
+    "{company}@gmail.com"
+  ]
+}

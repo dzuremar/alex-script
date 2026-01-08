@@ -1,4 +1,4 @@
-.env
+config.json
 /files
 /blacklist
 /input/
@@ -43,9 +43,5 @@ lerna-debug.log*
 test/_tmp_
 
 example_maillists
-
-.env
-.env.*
-!.env.example
 
 *.csv

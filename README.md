@@ -5,8 +5,12 @@ CLI tool that generates email address variants from contact data (first name, la
 ## How It Works
 
 1. Scans the `input/` folder for new CSV files
-2. For each new file, generates email variants using configurable templates
-3. Validates generated emails using `email-validator`
+2. For each new file, prompts user to:
+   - Confirm the file has headers (skips if no headers)
+   - Select which column contains First Name
+   - Select which column contains Last Name
+   - Select which column contains Domain
+3. Generates email variants using configurable templates
 4. Uploads variants to EmailListVerify API for bulk verification
 5. Tracks file IDs in `output/state.json` while processing
 6. When ELV processing is complete, downloads results
@@ -21,25 +25,23 @@ CLI tool that generates email address variants from contact data (first name, la
 │   ├── state.json   # Tracks files currently being processed by ELV
 │   └── *.csv        # Final output files with verified emails
 ├── tmp/             # Temporary files (auto-cleaned after upload)
-└── .env             # Configuration
+└── config.json      # Configuration
 ```
 
 ## Configuration
 
-Create a `.env` file with:
+Copy `config.example.json` to `config.json` and fill in your API key:
 
-```
-ELV_API_KEY=your_api_key_here
-FIRST_NAME_COLUMN=First Name
-LAST_NAME_COLUMN=Last Name
-DOMAIN_COLUMN=Domain
-
-VARIANTS="
-{first}.{last}@{domain}
-{last}.{first}@{domain}
-{f}.{last}@{domain}
-info@{domain}
-"
+```json
+{
+  "elvApiKey": "your_api_key_here",
+  "variants": [
+    "{first}.{last}@{domain}",
+    "{last}.{first}@{domain}",
+    "{f}.{last}@{domain}",
+    "info@{domain}"
+  ]
+}
 ```
 
 ### Template Variables
@@ -61,21 +63,52 @@ Variants requiring missing data are automatically skipped (e.g., `{first}.{last}
 npm run start
 ```
 
-The script will:
-1. Check progress of any files being processed by ELV
-2. Download and merge results for finished files
-3. Process any new CSV files in `input/`
+The script is interactive. For each new file, it will prompt you to:
 
-Run it periodically until all files are processed.
+```
+Processing: contacts.csv
+  Does this file have headers? (y/n): y
+  Found 5 columns in file.
+
+  Available columns:
+    1. Name
+    2. Surname
+    3. Company
+    4. Website
+    5. Phone
+    0. None / Skip
+  Which column is the First Name? (enter number): 1
+
+  Available columns:
+    1. Name
+    2. Surname
+    ...
+  Which column is the Last Name? (enter number): 2
+
+  Available columns:
+    ...
+  Which column is the Domain? (enter number): 4
+
+  Column mapping:
+    First Name: Name
+    Last Name: Surname
+    Domain: Website
+
+  Generating email variants...
+  Uploading file to ELV...
+  Done! ELV ID: 12345
+```
+
+Run the script periodically to check progress and download completed results.
 
 ## Input CSV Format
 
-CSV must have headers matching the column names in `.env`:
+CSV files must have headers. Any column names are supported - you'll be prompted to map them:
 
 ```csv
-First Name,Last Name,Domain
-john,smith,example.com
-jane,,company.org
+Name,Surname,Company,Website
+john,smith,Acme Inc,acme.com
+jane,doe,Tech Corp,techcorp.io
 ```
 
 ## Output
@@ -83,10 +116,10 @@ jane,,company.org
 Final output files are saved to `output/<filename>.csv` with a new "Verified Emails" column:
 
 ```csv
-First Name,Last Name,Domain,Verified Emails
-john,smith,example.com,"john.smith@example.com
-info@example.com"
-jane,,company.org,info@company.org
+Name,Surname,Company,Website,Verified Emails
+john,smith,Acme Inc,acme.com,"john.smith@acme.com
+info@acme.com"
+jane,doe,Tech Corp,techcorp.io,info@techcorp.io
 ```
 
 Multiple verified emails are newline-delimited within the cell.
@@ -101,6 +134,11 @@ Multiple verified emails are newline-delimited within the cell.
     "contacts.csv": {
       "elvId": 12345,
       "originalFile": "contacts.csv",
+      "columnMapping": {
+        "firstNameColumn": "Name",
+        "lastNameColumn": "Surname",
+        "domainColumn": "Website"
+      },
       "uploadedAt": "2024-01-08T10:00:00.000Z"
     }
   }
@@ -118,5 +156,5 @@ Files are removed from state after successful processing.
 ## Key Files
 
 - `index.ts` - Main entry point with all logic
-- `.env` - Configuration (API key, column names, email templates)
+- `config.json` - Configuration (API key, email templates)
 - `output/state.json` - Tracks files pending ELV processing
