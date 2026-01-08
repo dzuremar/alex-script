@@ -6,7 +6,8 @@
   "scripts": {
     "start": "tsx index.ts",
     "tsc": "tsc --noEmit",
-    "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint ."
+    "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
+    "format": "prettier --write \"*.ts\""
   },
   "author": "",
   "license": "ISC",

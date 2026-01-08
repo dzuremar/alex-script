@@ -152,6 +152,7 @@ Files are removed from state after successful processing.
 - `npm run start` - Run the tool
 - `npm run tsc` - Type check
 - `npm run lint` - Lint code
+- `npm run format` - Format code with Prettier
 
 ## Key Files
 
