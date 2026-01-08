@@ -50,10 +50,11 @@ async function createElvInputFile(originalFile: string, elvInputFile: string) {
   const writeStream = fs.createWriteStream(elvInputFile);
   let line = 0;
   await new Promise<void>((resolve, reject) => {
-    fs.createReadStream(originalFile)
-      .pipe(csv.parse({ headers: true }))
-      .pipe(csv.format({ headers: true }))
-      .transform((row, next) => {
+    const readStream = fs.createReadStream(originalFile);
+    const parseStream = readStream.pipe(csv.parse({ headers: true }));
+
+    parseStream
+      .on('data', (row) => {
         ++line;
         const firstName = process.env.FIRST_NAME_COLUMN && row[process.env.FIRST_NAME_COLUMN];
         const lastName = process.env.LAST_NAME_COLUMN && row[process.env.LAST_NAME_COLUMN];
@@ -62,9 +63,10 @@ async function createElvInputFile(originalFile: string, elvInputFile: string) {
         for (const email of generatedVariants) {
           writeStream.write(`${line},${email}\r\n`);
         }
-        next(null);
       })
-      .on('end', () => resolve())
+      .on('end', () => {
+        writeStream.end(() => resolve());
+      })
       .on('error', (error) => reject(error));
   });
 }
